@@ -126,7 +126,7 @@ export function HomeScreen() {
           
           const handleLessonClick = () => {
             if (st === 'lock') return;
-            if (l.sim) {
+            if ('sim' in l && l.sim) {
               setScreen('sim');
             } else {
               setActiveLessonIndex(globalIndex);
