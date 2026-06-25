@@ -38,6 +38,14 @@ export function SignupScreen() {
       }
     }
 
+    // Validate name doesn't contain non-Latin1 characters
+    for (let i = 0; i < name.length; i++) {
+      if (name.charCodeAt(i) > 255) {
+        setErrorMsg('El nombre contiene caracteres especiales no soportados.');
+        return;
+      }
+    }
+
     setIsLoading(true);
     setErrorMsg('');
 

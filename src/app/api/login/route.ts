@@ -10,11 +10,25 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Email y contraseña son obligatorios' }, { status: 400 });
     }
 
+    // Validate inputs don't contain non-Latin1 characters (btoa() limitation)
+    const hasInvalidChar = [...password, ...email].some(ch => ch.charCodeAt(0) > 255);
+    if (hasInvalidChar) {
+      return NextResponse.json({ error: 'El correo o contraseña contienen caracteres no soportados.' }, { status: 400 });
+    }
+
     // 1. Authenticate with Supabase Auth
-    const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
-      email,
-      password,
-    });
+    let authData, authError;
+    try {
+      const result = await supabase.auth.signInWithPassword({ email, password });
+      authData = result.data;
+      authError = result.error;
+    } catch (loginCatch: any) {
+      console.error('Supabase login crash:', loginCatch);
+      if (loginCatch?.message?.includes('ByteString')) {
+        return NextResponse.json({ error: 'El correo o contraseña contienen caracteres especiales no soportados.' }, { status: 400 });
+      }
+      return NextResponse.json({ error: 'Error al iniciar sesión. Intenta de nuevo.' }, { status: 500 });
+    }
 
     if (authError || !authData.user) {
       return NextResponse.json({ error: 'Correo o contraseña incorrectos.' }, { status: 401 });

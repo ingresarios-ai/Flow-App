@@ -12,23 +12,38 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Name, email, password and phone are required' }, { status: 400 });
     }
 
-    // Validate password doesn't contain characters > 255 (btoa() limitation in Supabase Auth)
+    // Validate password & email don't contain non-Latin1 characters (codes > 255)
+    // Supabase Auth SDK uses btoa() internally which only supports Latin-1 (0-255)
     const hasInvalidPasswordChar = [...password].some(ch => ch.charCodeAt(0) > 255);
     if (hasInvalidPasswordChar) {
-      return NextResponse.json({ error: 'La contraseña contiene caracteres no soportados. Usa solo letras, números y símbolos estándar.' }, { status: 400 });
+      return NextResponse.json({ error: 'La contraseña contiene caracteres especiales no soportados. Usa solo letras, números y símbolos del teclado.' }, { status: 400 });
     }
 
-    // Validate email is ASCII-only
     const hasInvalidEmailChar = [...email].some(ch => ch.charCodeAt(0) > 127);
     if (hasInvalidEmailChar) {
       return NextResponse.json({ error: 'El correo contiene caracteres no válidos.' }, { status: 400 });
     }
 
+    // Also validate the name for non-Latin1 chars
+    const hasInvalidNameChar = [...name].some(ch => ch.charCodeAt(0) > 255);
+    if (hasInvalidNameChar) {
+      return NextResponse.json({ error: 'El nombre contiene caracteres no soportados.' }, { status: 400 });
+    }
+
     // 1. Create user in Supabase Auth
-    const { data: authData, error: authError } = await supabase.auth.signUp({
-      email,
-      password,
-    });
+    let authData, authError;
+    try {
+      const result = await supabase.auth.signUp({ email, password });
+      authData = result.data;
+      authError = result.error;
+    } catch (signupCatch: any) {
+      // Catch ByteString / btoa errors from Supabase SDK internals
+      console.error('Supabase signUp crash:', signupCatch);
+      if (signupCatch?.message?.includes('ByteString')) {
+        return NextResponse.json({ error: 'Los datos contienen caracteres especiales no soportados. Revisa tu contraseña y nombre.' }, { status: 400 });
+      }
+      return NextResponse.json({ error: 'Error al crear la cuenta. Intenta de nuevo.' }, { status: 500 });
+    }
 
     if (authError) {
       console.error('Supabase Auth Error:', authError);
