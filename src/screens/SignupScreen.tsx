@@ -21,6 +21,23 @@ export function SignupScreen() {
       return;
     }
 
+    // Validate password doesn't contain non-Latin1 characters (codes > 255)
+    // Supabase Auth uses btoa() internally which only supports Latin-1
+    for (let i = 0; i < password.length; i++) {
+      if (password.charCodeAt(i) > 255) {
+        setErrorMsg('La contraseña contiene caracteres especiales no soportados. Usa solo letras, números y símbolos del teclado.');
+        return;
+      }
+    }
+
+    // Also validate email for non-ASCII chars
+    for (let i = 0; i < email.length; i++) {
+      if (email.charCodeAt(i) > 127) {
+        setErrorMsg('El correo electrónico contiene caracteres no válidos.');
+        return;
+      }
+    }
+
     setIsLoading(true);
     setErrorMsg('');
 

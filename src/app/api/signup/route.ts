@@ -12,6 +12,18 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Name, email, password and phone are required' }, { status: 400 });
     }
 
+    // Validate password doesn't contain characters > 255 (btoa() limitation in Supabase Auth)
+    const hasInvalidPasswordChar = [...password].some(ch => ch.charCodeAt(0) > 255);
+    if (hasInvalidPasswordChar) {
+      return NextResponse.json({ error: 'La contraseña contiene caracteres no soportados. Usa solo letras, números y símbolos estándar.' }, { status: 400 });
+    }
+
+    // Validate email is ASCII-only
+    const hasInvalidEmailChar = [...email].some(ch => ch.charCodeAt(0) > 127);
+    if (hasInvalidEmailChar) {
+      return NextResponse.json({ error: 'El correo contiene caracteres no válidos.' }, { status: 400 });
+    }
+
     // 1. Create user in Supabase Auth
     const { data: authData, error: authError } = await supabase.auth.signUp({
       email,
