@@ -1,7 +1,55 @@
 import { NextResponse } from 'next/server';
+import https from 'https';
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
+
+/**
+ * Make HTTPS request using Node.js core https module
+ * to bypass undici's ByteString validation bug on Vercel.
+ */
+function httpsRequest(
+  url: string,
+  method: string,
+  headers: Record<string, string>,
+  body?: string
+): Promise<{ status: number; data: any }> {
+  return new Promise((resolve, reject) => {
+    const parsed = new URL(url);
+    const options = {
+      hostname: parsed.hostname,
+      port: 443,
+      path: parsed.pathname + parsed.search,
+      method,
+      headers: {
+        ...headers,
+        ...(body ? { 'Content-Length': Buffer.byteLength(body).toString() } : {}),
+      },
+    };
+
+    const req = https.request(options, (res) => {
+      let responseBody = '';
+      res.on('data', (chunk: Buffer) => { responseBody += chunk.toString(); });
+      res.on('end', () => {
+        try {
+          resolve({ status: res.statusCode || 500, data: JSON.parse(responseBody) });
+        } catch {
+          resolve({ status: res.statusCode || 500, data: responseBody });
+        }
+      });
+    });
+
+    req.on('error', reject);
+    if (body) req.write(body);
+    req.end();
+  });
+}
+
+const supabaseHeaders: Record<string, string> = {
+  'Content-Type': 'application/json',
+  'apikey': SUPABASE_ANON_KEY,
+  'Authorization': 'Bearer ' + SUPABASE_ANON_KEY,
+};
 
 export async function POST(request: Request) {
   try {
@@ -12,40 +60,29 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Email y contraseña son obligatorios' }, { status: 400 });
     }
 
-    // 1. Authenticate with Supabase Auth (direct REST call)
-    const authRes = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=password`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'apikey': SUPABASE_ANON_KEY,
-        'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
-      },
-      body: JSON.stringify({ email, password }),
-    });
+    // 1. Authenticate with Supabase Auth (direct HTTPS call)
+    const authResult = await httpsRequest(
+      `${SUPABASE_URL}/auth/v1/token?grant_type=password`,
+      'POST',
+      supabaseHeaders,
+      JSON.stringify({ email, password })
+    );
 
-    const authData = await authRes.json();
-
-    if (!authRes.ok || !authData.user) {
+    if (authResult.status >= 400 || !authResult.data?.user) {
       return NextResponse.json({ error: 'Correo o contraseña incorrectos.' }, { status: 401 });
     }
 
-    // 2. Fetch user profile from flow_users (direct REST call)
+    // 2. Fetch user profile from flow_users
     const encodedEmail = encodeURIComponent(email);
-    const dbRes = await fetch(
+    const dbResult = await httpsRequest(
       `${SUPABASE_URL}/rest/v1/flow_users?email=eq.${encodedEmail}&select=*&limit=1`,
-      {
-        method: 'GET',
-        headers: {
-          'apikey': SUPABASE_ANON_KEY,
-          'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
-        },
-      }
+      'GET',
+      supabaseHeaders
     );
 
-    const users = await dbRes.json();
-    const user = Array.isArray(users) ? users[0] : null;
+    const user = Array.isArray(dbResult.data) ? dbResult.data[0] : null;
 
-    if (!dbRes.ok || !user) {
+    if (dbResult.status >= 400 || !user) {
       return NextResponse.json({ error: 'No se encontró el perfil del usuario.' }, { status: 404 });
     }
 
