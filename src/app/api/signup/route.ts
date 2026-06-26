@@ -1,15 +1,15 @@
 import { NextResponse } from 'next/server';
 
-// Force Node.js runtime (not Edge) so we can use the https module
+// Force Node.js runtime (not Edge)
 export const runtime = 'nodejs';
 
-const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
+const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
+const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
 const GHL_WEBHOOK_URL = 'https://services.leadconnectorhq.com/hooks/jTugwykceKyJlATOSvkb/webhook-trigger/4016ec77-86a6-4b6e-b397-53061bf9a474';
 
 /**
  * Make HTTPS request using Node.js core https module
- * to bypass undici's ByteString validation bug on Vercel.
+ * to bypass undici's ByteString validation bug.
  */
 async function safeRequest(
   url: string,
@@ -17,12 +17,11 @@ async function safeRequest(
   headers: Record<string, string>,
   body?: string
 ): Promise<{ status: number; data: any }> {
-  // Dynamic import to ensure it works in Node.js runtime
-  const https = await import('https');
-  
+  const https = require('https');
+
   return new Promise((resolve, reject) => {
     const parsed = new URL(url);
-    const options = {
+    const options: any = {
       hostname: parsed.hostname,
       port: 443,
       path: parsed.pathname + parsed.search,
@@ -33,9 +32,9 @@ async function safeRequest(
       },
     };
 
-    const req = https.request(options, (res) => {
+    const req = https.request(options, (res: any) => {
       let responseBody = '';
-      res.on('data', (chunk: Buffer) => { responseBody += chunk.toString(); });
+      res.on('data', (chunk: any) => { responseBody += chunk.toString(); });
       res.on('end', () => {
         try {
           resolve({ status: res.statusCode || 500, data: JSON.parse(responseBody) });
@@ -45,17 +44,11 @@ async function safeRequest(
       });
     });
 
-    req.on('error', reject);
+    req.on('error', (err: any) => reject(err));
     if (body) req.write(body);
     req.end();
   });
 }
-
-const supabaseHeaders: Record<string, string> = {
-  'Content-Type': 'application/json',
-  'apikey': SUPABASE_ANON_KEY,
-  'Authorization': 'Bearer ' + SUPABASE_ANON_KEY,
-};
 
 export async function POST(request: Request) {
   try {
@@ -66,16 +59,38 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Name, email, password and phone are required' }, { status: 400 });
     }
 
+    // Debug: verify env vars are loaded
+    if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+      return NextResponse.json({ 
+        error: 'Server configuration error',
+        debug: { hasUrl: !!SUPABASE_URL, hasKey: !!SUPABASE_ANON_KEY }
+      }, { status: 500 });
+    }
+
+    const supabaseHeaders: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'apikey': SUPABASE_ANON_KEY,
+      'Authorization': 'Bearer ' + SUPABASE_ANON_KEY,
+    };
+
     // 1. Create user in Supabase Auth
-    const authResult = await safeRequest(
-      `${SUPABASE_URL}/auth/v1/signup`,
-      'POST',
-      supabaseHeaders,
-      JSON.stringify({ email, password })
-    );
+    let authResult;
+    try {
+      authResult = await safeRequest(
+        `${SUPABASE_URL}/auth/v1/signup`,
+        'POST',
+        supabaseHeaders,
+        JSON.stringify({ email, password })
+      );
+    } catch (authCatch: any) {
+      return NextResponse.json({ 
+        error: 'Auth request failed', 
+        detail: authCatch?.message || String(authCatch),
+        type: authCatch?.constructor?.name
+      }, { status: 500 });
+    }
 
     if (authResult.status >= 400) {
-      console.error('Supabase Auth Error:', authResult.data);
       const msg = authResult.data?.msg || authResult.data?.error_description || authResult.data?.message || 'Error al crear la cuenta';
       return NextResponse.json({ error: msg }, { status: authResult.status });
     }
@@ -83,19 +98,26 @@ export async function POST(request: Request) {
     const userId = authResult.data?.id || authResult.data?.user?.id;
 
     // 2. Save or update user in flow_users (upsert)
-    const upsertResult = await safeRequest(
-      `${SUPABASE_URL}/rest/v1/flow_users?on_conflict=email`,
-      'POST',
-      {
-        ...supabaseHeaders,
-        'Prefer': 'resolution=merge-duplicates,return=representation',
-      },
-      JSON.stringify({ id: userId, name, email, phone })
-    );
+    let upsertResult;
+    try {
+      upsertResult = await safeRequest(
+        `${SUPABASE_URL}/rest/v1/flow_users?on_conflict=email`,
+        'POST',
+        {
+          ...supabaseHeaders,
+          'Prefer': 'resolution=merge-duplicates,return=representation',
+        },
+        JSON.stringify({ id: userId, name, email, phone })
+      );
+    } catch (dbCatch: any) {
+      return NextResponse.json({ 
+        error: 'DB request failed',
+        detail: dbCatch?.message || String(dbCatch)
+      }, { status: 500 });
+    }
 
     if (upsertResult.status >= 400) {
-      console.error('Supabase DB Error:', upsertResult.data);
-      return NextResponse.json({ error: 'Database error' }, { status: 500 });
+      return NextResponse.json({ error: 'Database error', detail: upsertResult.data }, { status: 500 });
     }
 
     const user = Array.isArray(upsertResult.data) ? upsertResult.data[0] : upsertResult.data;
@@ -106,17 +128,18 @@ export async function POST(request: Request) {
       'POST',
       { 'Content-Type': 'application/json' },
       JSON.stringify({
-        first_name: name,
-        email,
-        phone,
+        first_name: name, email, phone,
         tags: ['flow_app_lead'],
         source: 'Flow Simulator App',
       })
-    ).catch(err => console.error('GHL Webhook Error:', err));
+    ).catch(() => {});
 
     return NextResponse.json({ success: true, user });
-  } catch (error) {
-    console.error('Signup API Error:', error);
-    return NextResponse.json({ error: 'Internal Server Error' }, { status: 500 });
+  } catch (error: any) {
+    return NextResponse.json({ 
+      error: 'Internal Server Error', 
+      detail: error?.message || String(error),
+      stack: error?.stack?.split('\n').slice(0, 3)
+    }, { status: 500 });
   }
 }
