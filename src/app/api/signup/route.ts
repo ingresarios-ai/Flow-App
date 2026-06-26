@@ -1,5 +1,7 @@
 import { NextResponse } from 'next/server';
-import https from 'https';
+
+// Force Node.js runtime (not Edge) so we can use the https module
+export const runtime = 'nodejs';
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
@@ -9,12 +11,15 @@ const GHL_WEBHOOK_URL = 'https://services.leadconnectorhq.com/hooks/jTugwykceKyJ
  * Make HTTPS request using Node.js core https module
  * to bypass undici's ByteString validation bug on Vercel.
  */
-function httpsRequest(
+async function safeRequest(
   url: string,
   method: string,
   headers: Record<string, string>,
   body?: string
 ): Promise<{ status: number; data: any }> {
+  // Dynamic import to ensure it works in Node.js runtime
+  const https = await import('https');
+  
   return new Promise((resolve, reject) => {
     const parsed = new URL(url);
     const options = {
@@ -62,7 +67,7 @@ export async function POST(request: Request) {
     }
 
     // 1. Create user in Supabase Auth
-    const authResult = await httpsRequest(
+    const authResult = await safeRequest(
       `${SUPABASE_URL}/auth/v1/signup`,
       'POST',
       supabaseHeaders,
@@ -78,7 +83,7 @@ export async function POST(request: Request) {
     const userId = authResult.data?.id || authResult.data?.user?.id;
 
     // 2. Save or update user in flow_users (upsert)
-    const upsertResult = await httpsRequest(
+    const upsertResult = await safeRequest(
       `${SUPABASE_URL}/rest/v1/flow_users?on_conflict=email`,
       'POST',
       {
@@ -96,7 +101,7 @@ export async function POST(request: Request) {
     const user = Array.isArray(upsertResult.data) ? upsertResult.data[0] : upsertResult.data;
 
     // 3. Send data to GoHighLevel Webhook (fire-and-forget)
-    httpsRequest(
+    safeRequest(
       GHL_WEBHOOK_URL,
       'POST',
       { 'Content-Type': 'application/json' },

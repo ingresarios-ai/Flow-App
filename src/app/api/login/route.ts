@@ -1,5 +1,7 @@
 import { NextResponse } from 'next/server';
-import https from 'https';
+
+// Force Node.js runtime (not Edge) so we can use the https module
+export const runtime = 'nodejs';
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
@@ -8,12 +10,14 @@ const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
  * Make HTTPS request using Node.js core https module
  * to bypass undici's ByteString validation bug on Vercel.
  */
-function httpsRequest(
+async function safeRequest(
   url: string,
   method: string,
   headers: Record<string, string>,
   body?: string
 ): Promise<{ status: number; data: any }> {
+  const https = await import('https');
+
   return new Promise((resolve, reject) => {
     const parsed = new URL(url);
     const options = {
@@ -60,8 +64,8 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Email y contraseña son obligatorios' }, { status: 400 });
     }
 
-    // 1. Authenticate with Supabase Auth (direct HTTPS call)
-    const authResult = await httpsRequest(
+    // 1. Authenticate with Supabase Auth
+    const authResult = await safeRequest(
       `${SUPABASE_URL}/auth/v1/token?grant_type=password`,
       'POST',
       supabaseHeaders,
@@ -74,7 +78,7 @@ export async function POST(request: Request) {
 
     // 2. Fetch user profile from flow_users
     const encodedEmail = encodeURIComponent(email);
-    const dbResult = await httpsRequest(
+    const dbResult = await safeRequest(
       `${SUPABASE_URL}/rest/v1/flow_users?email=eq.${encodedEmail}&select=*&limit=1`,
       'GET',
       supabaseHeaders
