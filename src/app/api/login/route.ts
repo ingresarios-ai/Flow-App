@@ -1,5 +1,7 @@
 import { NextResponse } from 'next/server';
-import { supabase } from '@/lib/supabase';
+
+const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
 
 export async function POST(request: Request) {
   try {
@@ -10,38 +12,40 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Email y contraseña son obligatorios' }, { status: 400 });
     }
 
-    // Validate inputs don't contain non-Latin1 characters (btoa() limitation)
-    const hasInvalidChar = [...password, ...email].some(ch => ch.charCodeAt(0) > 255);
-    if (hasInvalidChar) {
-      return NextResponse.json({ error: 'El correo o contraseña contienen caracteres no soportados.' }, { status: 400 });
-    }
+    // 1. Authenticate with Supabase Auth (direct REST call)
+    const authRes = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=password`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': SUPABASE_ANON_KEY,
+        'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+      },
+      body: JSON.stringify({ email, password }),
+    });
 
-    // 1. Authenticate with Supabase Auth
-    let authData, authError;
-    try {
-      const result = await supabase.auth.signInWithPassword({ email, password });
-      authData = result.data;
-      authError = result.error;
-    } catch (loginCatch: any) {
-      console.error('Supabase login crash:', loginCatch);
-      if (loginCatch?.message?.includes('ByteString')) {
-        return NextResponse.json({ error: 'El correo o contraseña contienen caracteres especiales no soportados.' }, { status: 400 });
-      }
-      return NextResponse.json({ error: 'Error al iniciar sesión. Intenta de nuevo.' }, { status: 500 });
-    }
+    const authData = await authRes.json();
 
-    if (authError || !authData.user) {
+    if (!authRes.ok || !authData.user) {
       return NextResponse.json({ error: 'Correo o contraseña incorrectos.' }, { status: 401 });
     }
 
-    // 2. Fetch user profile from flow_users
-    const { data: user, error: dbError } = await supabase
-      .from('flow_users')
-      .select('*')
-      .eq('email', email)
-      .single();
+    // 2. Fetch user profile from flow_users (direct REST call)
+    const encodedEmail = encodeURIComponent(email);
+    const dbRes = await fetch(
+      `${SUPABASE_URL}/rest/v1/flow_users?email=eq.${encodedEmail}&select=*&limit=1`,
+      {
+        method: 'GET',
+        headers: {
+          'apikey': SUPABASE_ANON_KEY,
+          'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+        },
+      }
+    );
 
-    if (dbError || !user) {
+    const users = await dbRes.json();
+    const user = Array.isArray(users) ? users[0] : null;
+
+    if (!dbRes.ok || !user) {
       return NextResponse.json({ error: 'No se encontró el perfil del usuario.' }, { status: 404 });
     }
 
